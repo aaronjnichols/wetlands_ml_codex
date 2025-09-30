@@ -19,6 +19,7 @@ from pystac_client import Client
 import stackstac
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
+from rasterio.merge import merge
 from rasterio.errors import RasterioIOError
 import rasterio
 from shapely import wkt
@@ -115,6 +116,94 @@ def compute_naip_scaling(dataset: rasterio.io.DatasetReader) -> Optional[float]:
             return None
         return float(info.max)
     return None
+
+
+
+def collect_naip_sources(candidates: Sequence[Path]) -> List[Path]:
+    paths: List[Path] = []
+    for candidate in candidates:
+        path = Path(candidate)
+        if path.is_dir():
+            for pattern in ("*.tif", "*.tiff"):
+                for child in sorted(path.glob(pattern)):
+                    if child.is_file():
+                        paths.append(child)
+        else:
+            paths.append(path)
+    unique: List[Path] = []
+    seen = set()
+    for path in paths:
+        resolved = path.expanduser().resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(resolved)
+    return unique
+
+
+
+def prepare_naip_reference(sources: Sequence[Path], working_dir: Path) -> Tuple[Path, Dict[str, Any], Sequence[str]]:
+    if not sources:
+        raise ValueError("No NAIP rasters were provided.")
+    crs = None
+    resolution = None
+    band_count = None
+    for src_path in sources:
+        with rasterio.open(src_path) as dataset:
+            if crs is None:
+                crs = dataset.crs
+                resolution = dataset.res
+                band_count = dataset.count
+            else:
+                if dataset.crs != crs:
+                    raise ValueError("All NAIP rasters must share the same CRS.")
+                if not np.allclose(dataset.res, resolution, atol=1e-6):
+                    raise ValueError("All NAIP rasters must share the same pixel size.")
+                if dataset.count != band_count:
+                    raise ValueError("All NAIP rasters must share the same band count.")
+    if len(sources) == 1:
+        with rasterio.open(sources[0]) as reference:
+            reference_profile: Dict[str, Any] = {
+                "crs": reference.crs.to_string() if reference.crs else None,
+                "transform": reference.transform,
+                "width": reference.width,
+                "height": reference.height,
+            }
+            naip_labels = NAIP_BAND_LABELS[: reference.count]
+        return Path(sources[0]), reference_profile, naip_labels
+
+    mosaic_path = working_dir / "naip_mosaic.tif"
+    mosaic_path.parent.mkdir(parents=True, exist_ok=True)
+    datasets = [rasterio.open(path) for path in sources]
+    try:
+        mosaic, transform = merge(datasets)
+        profile = datasets[0].profile
+        profile.update(
+            {
+                "height": mosaic.shape[1],
+                "width": mosaic.shape[2],
+                "transform": transform,
+            }
+        )
+        profile.setdefault("tiled", True)
+        profile.setdefault("compress", "deflate")
+        profile.setdefault("BIGTIFF", "IF_SAFER")
+        with rasterio.open(mosaic_path, "w", **profile) as dst:
+            dst.write(mosaic)
+    finally:
+        for dataset in datasets:
+            dataset.close()
+
+    with rasterio.open(mosaic_path) as reference:
+        reference_profile = {
+            "crs": reference.crs.to_string() if reference.crs else None,
+            "transform": reference.transform,
+            "width": reference.width,
+            "height": reference.height,
+        }
+        naip_labels = NAIP_BAND_LABELS[: reference.count]
+    logging.info("Generated NAIP mosaic from %s rasters at %s", len(sources), mosaic_path)
+    return mosaic_path, reference_profile, naip_labels
+
 
 
 def write_stack_manifest(
@@ -476,10 +565,16 @@ def run_pipeline(
     cloud_cover: float = 60.0,
     min_clear_obs: int = 3,
     stac_url: str = "https://earth-search.aws.element84.com/v1",
-    naip_path: Optional[Path] = None,
+    naip_paths: Optional[Sequence[Path]] = None,
     mask_dilation: int = 0,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    naip_candidates: List[Path] = list(naip_paths) if naip_paths else []
+    naip_sources = collect_naip_sources(naip_candidates) if naip_candidates else []
+    if naip_candidates and not naip_sources:
+        inputs = ", ".join(str(path) for path in naip_candidates)
+        raise FileNotFoundError(f"No NAIP rasters found for --naip-path inputs: {inputs}")
+    has_naip = bool(naip_sources)
     geom = parse_aoi(aoi)
     client = Client.open(stac_url)
 
@@ -519,7 +614,7 @@ def run_pipeline(
         logging.warning("Skipping multi-season outputs; not all seasons were generated.")
         return
 
-    progress.extend(1 + int(bool(naip_path)))
+    progress.extend(1 + int(has_naip))
     composite_label = "Seasonal 21-band stack"
     progress.start(composite_label)
     combined21, labels21 = concatenate_seasons(seasonal_data, seasons)
@@ -527,20 +622,16 @@ def run_pipeline(
     write_dataarray(combined21, combined21_path, labels21)
     progress.finish(composite_label)
 
-    if naip_path:
+    if has_naip:
         stack_label = "Stack manifest generation"
         progress.start(stack_label)
-        with rasterio.open(naip_path) as reference:
-            reference_profile: Dict[str, Any] = {
-                "crs": reference.crs.to_string() if reference.crs else None,
-                "transform": reference.transform,
-                "width": reference.width,
-                "height": reference.height,
-            }
-            naip_band_labels = NAIP_BAND_LABELS[: reference.count]
+        naip_reference_path, reference_profile, naip_band_labels = prepare_naip_reference(
+            naip_sources,
+            output_dir,
+        )
         manifest_path = write_stack_manifest(
             output_dir=output_dir,
-            naip_path=naip_path,
+            naip_path=naip_reference_path,
             naip_labels=naip_band_labels,
             sentinel_path=combined21_path,
             sentinel_labels=labels21,
@@ -587,7 +678,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--naip-path",
         type=Path,
-        help="Optional NAIP GeoTIFF to define the target grid for Sentinel alignment",
+        nargs="+",
+        help=(
+            "Optional NAIP GeoTIFF(s) or directories to define the target grid. "
+            "Multiple rasters will be mosaicked automatically."
+        ),
     )
     parser.add_argument(
         "--mask-dilation",
@@ -617,7 +712,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         cloud_cover=args.cloud_cover,
         min_clear_obs=args.min_clear_obs,
         stac_url=args.stac_url,
-        naip_path=args.naip_path,
+        naip_paths=tuple(args.naip_path) if args.naip_path else None,
         mask_dilation=args.mask_dilation,
     )
 
