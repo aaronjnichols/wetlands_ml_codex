@@ -1,0 +1,9 @@
+﻿# Visualization, notebook, and analysis extras
+leafmap==0.52.1
+folium==0.20.0
+matplotlib==3.10.6
+plotly==6.3.0
+jupyter==1.1.1
+ipywidgets==8.1.7
+ipyleaflet==0.20.0
+scikit-learn==1.7.2
