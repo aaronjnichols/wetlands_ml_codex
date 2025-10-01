@@ -1,0 +1,377 @@
+﻿"""UNet-based semantic segmentation training entry point for wetlands_ml_geoai."""
+import argparse
+import logging
+import os
+from pathlib import Path
+from typing import Optional, Tuple
+
+import geoai
+import numpy as np
+import rasterio
+
+from .stacking import RasterStack, load_manifest, rewrite_tile_images
+from .train import _analyze_label_tiles, strtobool
+
+DEFAULT_TILE_SIZE = 512
+DEFAULT_STRIDE = 256
+DEFAULT_BUFFER = 0
+DEFAULT_BATCH_SIZE = 4
+DEFAULT_EPOCHS = 25
+DEFAULT_LEARNING_RATE = 0.001
+DEFAULT_WEIGHT_DECAY = 1e-4
+DEFAULT_VAL_SPLIT = 0.2
+DEFAULT_NUM_CLASSES = 2
+DEFAULT_ARCHITECTURE = "unet"
+DEFAULT_ENCODER_NAME = "resnet34"
+DEFAULT_ENCODER_WEIGHTS = "imagenet"
+DEFAULT_SEED = 42
+DEFAULT_RESIZE_MODE = "resize"
+
+
+def parse_target_size(value: Optional[str]) -> Optional[Tuple[int, int]]:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    normalized = (
+        text.replace("by", " ")
+        .replace("x", " ")
+        .replace("*", " ")
+        .replace(",", " ")
+    )
+    parts = [p for p in normalized.split() if p]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        size = int(float(parts[0]))
+        return size, size
+    height = int(float(parts[0]))
+    width = int(float(parts[1]))
+    return height, width
+
+
+def derive_num_channels(raster_path: Path, override: Optional[int]) -> int:
+    if override is not None:
+        return override
+    with rasterio.open(raster_path) as src:
+        return src.count
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Prepare tiles and train a wetlands UNet semantic segmentation model."
+    )
+    parser.add_argument(
+        "--train-raster",
+        default=os.getenv("TRAIN_RASTER_PATH"),
+        help="Path to the training raster (expects 4- or 25-band stack).",
+    )
+    parser.add_argument(
+        "--stack-manifest",
+        default=os.getenv("TRAIN_STACK_MANIFEST"),
+        help="Path to a stack manifest JSON (generates multi-band tiles on demand).",
+    )
+    parser.add_argument(
+        "--labels",
+        default=os.getenv("TRAIN_LABELS_PATH"),
+        help="Path to the vector training labels (GeoPackage or shapefile).",
+    )
+    parser.add_argument(
+        "--tiles-dir",
+        default=os.getenv("TRAIN_TILES_DIR"),
+        help="Directory for exported image/label tiles. Defaults to <raster_parent>/tiles.",
+    )
+    parser.add_argument(
+        "--models-dir",
+        default=os.getenv("TRAIN_MODELS_DIR"),
+        help="Directory to store trained model checkpoints. Defaults to <tiles-dir>/models.",
+    )
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        default=int(os.getenv("TILE_SIZE", DEFAULT_TILE_SIZE)),
+        help="Tile size in pixels.",
+    )
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=int(os.getenv("TILE_STRIDE", DEFAULT_STRIDE)),
+        help="Stride in pixels between tiles.",
+    )
+    parser.add_argument(
+        "--buffer",
+        type=int,
+        default=int(os.getenv("TILE_BUFFER", DEFAULT_BUFFER)),
+        help="Buffer radius for tile extraction.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=int(os.getenv("UNET_BATCH_SIZE", DEFAULT_BATCH_SIZE)),
+        help="Training batch size.",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=int(os.getenv("UNET_NUM_EPOCHS", DEFAULT_EPOCHS)),
+        help="Number of training epochs.",
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=float(os.getenv("UNET_LEARNING_RATE", DEFAULT_LEARNING_RATE)),
+        help="Optimizer learning rate.",
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=float(os.getenv("UNET_WEIGHT_DECAY", DEFAULT_WEIGHT_DECAY)),
+        help="Weight decay for optimizer.",
+    )
+    parser.add_argument(
+        "--val-split",
+        type=float,
+        default=float(os.getenv("VAL_SPLIT", DEFAULT_VAL_SPLIT)),
+        help="Validation split fraction.",
+    )
+    parser.add_argument(
+        "--num-channels",
+        type=int,
+        default=None,
+        help="Override the input channel count; derived from raster if omitted.",
+    )
+    parser.add_argument(
+        "--num-classes",
+        type=int,
+        default=int(os.getenv("UNET_NUM_CLASSES", DEFAULT_NUM_CLASSES)),
+        help="Number of segmentation classes (including background).",
+    )
+    parser.add_argument(
+        "--architecture",
+        default=os.getenv("UNET_ARCHITECTURE", DEFAULT_ARCHITECTURE),
+        help="segmentation-models-pytorch architecture to use (e.g., unet, fpn, deeplabv3plus).",
+    )
+    parser.add_argument(
+        "--encoder-name",
+        default=os.getenv("UNET_ENCODER_NAME", DEFAULT_ENCODER_NAME),
+        help="Backbone encoder (e.g., resnet34, efficientnet-b3, mit_b0).",
+    )
+    default_encoder_weights = os.getenv("UNET_ENCODER_WEIGHTS", DEFAULT_ENCODER_WEIGHTS)
+    parser.add_argument(
+        "--encoder-weights",
+        default=default_encoder_weights,
+        help="Encoder weights preset (e.g., imagenet) or 'none' to disable.",
+    )
+    parser.add_argument(
+        "--no-encoder-weights",
+        dest="encoder_weights",
+        action="store_const",
+        const=None,
+        help="Disable pretrained encoder weights.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=int(os.getenv("UNET_SEED", DEFAULT_SEED)),
+        help="Random seed for reproducibility.",
+    )
+    parser.add_argument(
+        "--target-size",
+        default=os.getenv("UNET_TARGET_SIZE"),
+        help="Optional target HxW for resizing tiles (e.g., '512x512').",
+    )
+    parser.add_argument(
+        "--resize-mode",
+        default=os.getenv("UNET_RESIZE_MODE", DEFAULT_RESIZE_MODE),
+        choices=["resize", "pad"],
+        help="Resize strategy when target-size is provided.",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=(
+            int(os.getenv("UNET_NUM_WORKERS"))
+            if os.getenv("UNET_NUM_WORKERS") is not None
+            else None
+        ),
+        help="Number of DataLoader workers (defaults to geoai's platform-aware choice).",
+    )
+    default_save_best = strtobool(os.getenv("UNET_SAVE_BEST_ONLY", "true"))
+    parser.set_defaults(save_best_only=default_save_best)
+    parser.add_argument(
+        "--save-best-only",
+        dest="save_best_only",
+        action="store_true",
+        help="Only persist the best checkpoint (default).",
+    )
+    parser.add_argument(
+        "--save-all-checkpoints",
+        dest="save_best_only",
+        action="store_false",
+        help="Persist periodic checkpoints in addition to the best model.",
+    )
+    parser.add_argument(
+        "--plot-curves",
+        dest="plot_curves",
+        action="store_true",
+        help="Generate loss/metric plots after training.",
+    )
+    parser.add_argument(
+        "--no-plot-curves",
+        dest="plot_curves",
+        action="store_false",
+        help="Skip plotting curves (default).",
+    )
+    parser.set_defaults(plot_curves=strtobool(os.getenv("UNET_PLOT_CURVES", "false")))
+    parser.add_argument(
+        "--checkpoint-path",
+        default=os.getenv("UNET_CHECKPOINT_PATH"),
+        help="Optional checkpoint to load before training.",
+    )
+    parser.add_argument(
+        "--resume-training",
+        dest="resume_training",
+        action="store_true",
+        help="Resume optimizer/scheduler state from checkpoint (requires --checkpoint-path).",
+    )
+    parser.add_argument(
+        "--log-level",
+        default=os.getenv("LOG_LEVEL", "INFO"),
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging verbosity level.",
+    )
+
+    args = parser.parse_args()
+
+    if not args.train_raster and not args.stack_manifest:
+        parser.error(
+            "Provide --train-raster or --stack-manifest (or set TRAIN_RASTER_PATH / TRAIN_STACK_MANIFEST)."
+        )
+    if not args.labels:
+        parser.error("--labels or TRAIN_LABELS_PATH must be supplied.")
+
+    return args
+
+
+def main() -> None:
+    args = parse_args()
+    logging.basicConfig(level=getattr(logging, args.log_level.upper()))
+
+    labels_path = Path(args.labels).expanduser().resolve()
+    if not labels_path.exists():
+        raise FileNotFoundError(f"Training labels not found: {labels_path}")
+
+    manifest_path = None
+    if args.stack_manifest:
+        manifest_raw = args.stack_manifest.strip()
+        if manifest_raw.startswith('"') and manifest_raw.endswith('"'):
+            manifest_raw = manifest_raw[1:-1]
+        manifest_path = Path(manifest_raw).expanduser().resolve()
+    stack_manifest = load_manifest(manifest_path) if manifest_path else None
+
+    if stack_manifest is not None:
+        naip_source = stack_manifest.naip
+        if naip_source is None:
+            raise ValueError("Stack manifest does not include a NAIP source.")
+        base_raster = naip_source.path
+    else:
+        if args.train_raster is None:
+            raise ValueError(
+                "--train-raster must be provided when no stack manifest is supplied."
+            )
+        base_raster = Path(args.train_raster).expanduser().resolve()
+
+    if not Path(base_raster).exists():
+        raise FileNotFoundError(f"Training raster not found: {base_raster}")
+
+    default_parent = manifest_path.parent if manifest_path else Path(base_raster).parent
+    tiles_dir = (
+        Path(args.tiles_dir).expanduser().resolve()
+        if args.tiles_dir
+        else default_parent / "tiles"
+    )
+    models_dir = (
+        Path(args.models_dir).expanduser().resolve()
+        if args.models_dir
+        else tiles_dir / "models_unet"
+    )
+    images_dir = tiles_dir / "images"
+    labels_tiles_dir = tiles_dir / "labels"
+
+    for path in (tiles_dir, models_dir):
+        path.mkdir(parents=True, exist_ok=True)
+
+    logging.info("Exporting tiles to %s", tiles_dir)
+    geoai.export_geotiff_tiles(
+        in_raster=str(base_raster),
+        out_folder=str(tiles_dir),
+        in_class_data=str(labels_path),
+        tile_size=args.tile_size,
+        stride=args.stride,
+        buffer_radius=args.buffer,
+    )
+
+    if stack_manifest is not None:
+        rewritten = rewrite_tile_images(stack_manifest, images_dir)
+        logging.info("Rewrote %s image tiles with stack manifest", rewritten)
+
+    if not images_dir.exists():
+        raise FileNotFoundError(f"Image tiles directory missing: {images_dir}")
+    if not labels_tiles_dir.exists():
+        raise FileNotFoundError(f"Label tiles directory missing: {labels_tiles_dir}")
+
+    if stack_manifest is not None and args.num_channels is None:
+        with RasterStack(stack_manifest) as stack:
+            num_channels = stack.band_count
+    else:
+        num_channels = derive_num_channels(Path(base_raster), args.num_channels)
+    if args.num_channels is not None:
+        num_channels = args.num_channels
+
+    logging.info("Training UNet model with %s input channels", num_channels)
+
+    all_one_frac, avg_cover, checked = _analyze_label_tiles(labels_tiles_dir)
+    if checked:
+        logging.info(
+            "Analyzed %s label tiles – %.1f%% all-one, mean foreground cover %.3f",
+            checked,
+            all_one_frac * 100,
+            avg_cover,
+        )
+
+    encoder_weights = args.encoder_weights
+    if isinstance(encoder_weights, str) and encoder_weights.lower() in {"none", "null"}:
+        encoder_weights = None
+
+    target_size = parse_target_size(args.target_size)
+
+    geoai.train_segmentation_model(
+        images_dir=str(images_dir),
+        labels_dir=str(labels_tiles_dir),
+        output_dir=str(models_dir),
+        architecture=args.architecture,
+        encoder_name=args.encoder_name,
+        encoder_weights=encoder_weights,
+        num_channels=num_channels,
+        num_classes=args.num_classes,
+        batch_size=args.batch_size,
+        num_epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        seed=args.seed,
+        val_split=args.val_split,
+        save_best_only=args.save_best_only,
+        plot_curves=args.plot_curves,
+        target_size=target_size,
+        resize_mode=args.resize_mode,
+        num_workers=args.num_workers,
+        checkpoint_path=args.checkpoint_path,
+        resume_training=args.resume_training,
+    )
+
+    logging.info("Training complete. Models saved to %s", models_dir)
+
+
+if __name__ == "__main__":
+    main()
