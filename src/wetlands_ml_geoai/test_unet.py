@@ -242,6 +242,7 @@ def run_manifest_inference(
                     win = Window(col_off, row_off, window_w, window_h)
                     data = stack.read_window(win).astype(np.float32)
                     data = np.where(data == FLOAT_NODATA, 0.0, data)
+                    data = data / 255.0
                     tensor = torch.from_numpy(data).to(device)
                     tensor = tensor.unsqueeze(0)
 
@@ -360,6 +361,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
