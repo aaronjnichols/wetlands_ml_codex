@@ -274,7 +274,6 @@ def run_manifest_inference(
         "count": 1,
         "dtype": "uint8",
         "transform": transform,
-        "nodata": 0,
         "compress": "deflate",
         "tiled": True,
         "BIGTIFF": "IF_SAFER",
@@ -361,4 +360,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
