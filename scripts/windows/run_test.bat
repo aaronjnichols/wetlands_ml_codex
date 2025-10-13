@@ -1,11 +1,14 @@
 @echo off
 setlocal enabledelayedexpansion
 
+REM Change to project root directory (2 levels up from scripts\windows)
+cd /d "%~dp0..\.."
+
 REM ------------------------------------------------------------------
 REM Edit the values below before running inference.
 REM Leave STACK_MANIFEST empty if you prefer to use TEST_RASTER.
 REM ------------------------------------------------------------------
-set "STACK_MANIFEST=data\small_test\s2\stack_manifest.json"
+set "STACK_MANIFEST=data\small_test\s2_test\stack_manifest.json"
 set "TEST_RASTER="
 set "MODEL_PATH=data\small_test\models\best_model.pth"
 set "OUTPUT_DIR=data\small_test\predictions"
@@ -46,16 +49,16 @@ if errorlevel 1 (
 )
 
 set "STACK_ARG="
-if not "%STACK_MANIFEST%"=="" set "STACK_ARG=--stack-manifest "%STACK_MANIFEST%""
+if not "%STACK_MANIFEST%"=="" set "STACK_ARG=--stack-manifest \"%STACK_MANIFEST%\""
 
 set "RASTER_ARG="
-if not "%TEST_RASTER%"=="" set "RASTER_ARG=--test-raster "%TEST_RASTER%""
+if not "%TEST_RASTER%"=="" set "RASTER_ARG=--test-raster \"%TEST_RASTER%\""
 
 set "MASK_ARG="
-if not "%MASK_PATH%"=="" set "MASK_ARG=--masks "%MASK_PATH%""
+if not "%MASK_PATH%"=="" set "MASK_ARG=--masks \"%MASK_PATH%\""
 
 set "VECTOR_ARG="
-if not "%VECTOR_PATH%"=="" set "VECTOR_ARG=--vectors "%VECTOR_PATH%""
+if not "%VECTOR_PATH%"=="" set "VECTOR_ARG=--vectors \"%VECTOR_PATH%\""
 
 set "NUM_CHANNELS_ARG="
 if not "%NUM_CHANNELS%"=="" set "NUM_CHANNELS_ARG=--num-channels %NUM_CHANNELS%"

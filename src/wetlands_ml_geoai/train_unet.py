@@ -5,12 +5,15 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple
 
-import geoai
+from pathlib import Path
+from typing import Optional, Tuple
+
 import numpy as np
 import rasterio
 
-from .stacking import RasterStack, load_manifest, rewrite_tile_images
-from .train import _analyze_label_tiles, strtobool
+from .stacking import load_manifest
+from .train import strtobool
+from .training.unet import train_unet as run_training
 
 DEFAULT_TILE_SIZE = 512
 DEFAULT_STRIDE = 256
@@ -49,13 +52,6 @@ def parse_target_size(value: Optional[str]) -> Optional[Tuple[int, int]]:
     height = int(float(parts[0]))
     width = int(float(parts[1]))
     return height, width
-
-
-def derive_num_channels(raster_path: Path, override: Optional[int]) -> int:
-    if override is not None:
-        return override
-    with rasterio.open(raster_path) as src:
-        return src.count
 
 
 def parse_args() -> argparse.Namespace:
@@ -274,7 +270,7 @@ def main() -> None:
         naip_source = stack_manifest.naip
         if naip_source is None:
             raise ValueError("Stack manifest does not include a NAIP source.")
-        base_raster = naip_source.path
+        base_raster = Path(naip_source.path)
     else:
         if args.train_raster is None:
             raise ValueError(
@@ -282,10 +278,10 @@ def main() -> None:
             )
         base_raster = Path(args.train_raster).expanduser().resolve()
 
-    if not Path(base_raster).exists():
+    if not base_raster.exists():
         raise FileNotFoundError(f"Training raster not found: {base_raster}")
 
-    default_parent = manifest_path.parent if manifest_path else Path(base_raster).parent
+    default_parent = manifest_path.parent if manifest_path else base_raster.parent
     tiles_dir = (
         Path(args.tiles_dir).expanduser().resolve()
         if args.tiles_dir
@@ -296,67 +292,33 @@ def main() -> None:
         if args.models_dir
         else tiles_dir / "models_unet"
     )
-    images_dir = tiles_dir / "images"
-    labels_tiles_dir = tiles_dir / "labels"
-
-    for path in (tiles_dir, models_dir):
-        path.mkdir(parents=True, exist_ok=True)
-
-    logging.info("Exporting tiles to %s", tiles_dir)
-    geoai.export_geotiff_tiles(
-        in_raster=str(base_raster),
-        out_folder=str(tiles_dir),
-        in_class_data=str(labels_path),
-        tile_size=args.tile_size,
-        stride=args.stride,
-        buffer_radius=args.buffer,
-    )
-
-    if stack_manifest is not None:
-        rewritten = rewrite_tile_images(stack_manifest, images_dir)
-        logging.info("Rewrote %s image tiles with stack manifest", rewritten)
-
-    if not images_dir.exists():
-        raise FileNotFoundError(f"Image tiles directory missing: {images_dir}")
-    if not labels_tiles_dir.exists():
-        raise FileNotFoundError(f"Label tiles directory missing: {labels_tiles_dir}")
-
-    if stack_manifest is not None and args.num_channels is None:
-        with RasterStack(stack_manifest) as stack:
-            num_channels = stack.band_count
-    else:
-        num_channels = derive_num_channels(Path(base_raster), args.num_channels)
-    if args.num_channels is not None:
-        num_channels = args.num_channels
-
-    logging.info("Training UNet model with %s input channels", num_channels)
-
-    all_one_frac, avg_cover, checked = _analyze_label_tiles(labels_tiles_dir)
-    if checked:
-        logging.info(
-            "Analyzed %s label tiles – %.1f%% all-one, mean foreground cover %.3f",
-            checked,
-            all_one_frac * 100,
-            avg_cover,
-        )
 
     encoder_weights = args.encoder_weights
-    if isinstance(encoder_weights, str) and encoder_weights.lower() in {"none", "null"}:
-        encoder_weights = None
+    if isinstance(encoder_weights, str):
+        cleaned = encoder_weights.strip().strip('"').strip("'")
+        if cleaned.lower() in {"", "none", "null"}:
+            encoder_weights = None
+        else:
+            encoder_weights = cleaned
 
     target_size = parse_target_size(args.target_size)
 
-    geoai.train_segmentation_model(
-        images_dir=str(images_dir),
-        labels_dir=str(labels_tiles_dir),
-        output_dir=str(models_dir),
+    run_training(
+        labels_path=labels_path,
+        train_raster=base_raster,
+        tiles_dir=tiles_dir,
+        models_dir=models_dir,
+        stack_manifest_path=manifest_path,
+        tile_size=args.tile_size,
+        stride=args.stride,
+        buffer_radius=args.buffer,
+        num_channels_override=args.num_channels,
+        num_classes=args.num_classes,
         architecture=args.architecture,
         encoder_name=args.encoder_name,
         encoder_weights=encoder_weights,
-        num_channels=num_channels,
-        num_classes=args.num_classes,
         batch_size=args.batch_size,
-        num_epochs=args.epochs,
+        epochs=args.epochs,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         seed=args.seed,
@@ -366,11 +328,11 @@ def main() -> None:
         target_size=target_size,
         resize_mode=args.resize_mode,
         num_workers=args.num_workers,
-        checkpoint_path=args.checkpoint_path,
+        checkpoint_path=Path(args.checkpoint_path).expanduser().resolve()
+        if args.checkpoint_path
+        else None,
         resume_training=args.resume_training,
     )
-
-    logging.info("Training complete. Models saved to %s", models_dir)
 
 
 if __name__ == "__main__":

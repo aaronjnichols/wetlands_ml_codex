@@ -24,6 +24,8 @@ python train.py --help
 python test.py --help
 python train_unet.py --help
 python test_unet.py --help
+
+Add `--auto-download-naip` and `--auto-download-wetlands` to let the pipeline pull NAIP tiles (year and max tiles configurable) and wetlands delineations automatically when local datasets are not already available.
 ```
 
 ## Model Options

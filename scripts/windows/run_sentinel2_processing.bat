@@ -1,37 +1,85 @@
 @echo off
 setlocal enabledelayedexpansion
 
+REM Change to project root directory (2 levels up from scripts\windows)
+cd /d "%~dp0..\.."
+
 REM ------------------------------------------------------------------
 REM Edit the values below to match your project before running.
 REM ------------------------------------------------------------------
-set "AOI_PATH=data\small_test\test_aoi.gpkg"
+set "AOI_PATH=C:\Users\anichols\OneDrive - Atwell LLC\Desktop\_Atwell_AI\Projects\Wetlands_ML\Test_Model_Data_FL\test_aoi.gpkg"
 set "YEARS=2022 2023 2024"
-set "OUTPUT_DIR=data\small_test\s2_test"
+set "OUTPUT_DIR=data\s2\test"
 set "SEASONS=SPR SUM FAL"
-set "NAIP_PATH=data\small_test\test_naip.tif"
+set "NAIP_PATH="
 set "CLOUD_COVER=60"
 set "MIN_CLEAR_OBS=3"
 set "MASK_DILATION=0"
 set "STAC_URL=https://earth-search.aws.element84.com/v1"
 set "LOG_LEVEL=INFO"
 
-if not exist venv\Scripts\activate.bat (
+REM Auto-download configuration (set false to disable)
+set "AUTO_DOWNLOAD_NAIP=true"
+set "AUTO_DOWNLOAD_NAIP_YEAR=2023"
+set "AUTO_DOWNLOAD_NAIP_MAX_ITEMS=1"
+set "AUTO_DOWNLOAD_NAIP_OVERWRITE=false"
+set "AUTO_DOWNLOAD_NAIP_PREVIEW=false"
+set "AUTO_DOWNLOAD_WETLANDS=true"
+set "WETLANDS_OUTPUT=data\wetlands\train_wetlands.gpkg"
+set "WETLANDS_OVERWRITE=false"
+set "NAIP_TARGET_RESOLUTION=1"
+
+if not exist "venv\Scripts\activate.bat" (
     echo [ERROR] Python virtual environment not found. Run setup.bat first.
     pause
+    exit /b 1
 )
 
-call venv\Scripts\activate.bat
-if errorlevel 1 (
-    echo [ERROR] Failed to activate virtual environment.
-    pause
+call "venv\Scripts\activate.bat"
+
+set "NAIP_ARG="
+if not "%NAIP_PATH%"=="" set "NAIP_ARG=--naip-path "%NAIP_PATH%""
+
+set "AUTO_NAIP_FLAG="
+set "AUTO_NAIP_YEAR_ARG="
+set "AUTO_NAIP_MAX_ITEMS_ARG="
+set "AUTO_NAIP_OVERWRITE_FLAG="
+set "AUTO_NAIP_PREVIEW_FLAG="
+if /I "%AUTO_DOWNLOAD_NAIP%"=="true" (
+    set "AUTO_NAIP_FLAG=--auto-download-naip"
+    if not "%AUTO_DOWNLOAD_NAIP_YEAR%"=="" set "AUTO_NAIP_YEAR_ARG=--auto-download-naip-year %AUTO_DOWNLOAD_NAIP_YEAR%"
+    if not "%AUTO_DOWNLOAD_NAIP_MAX_ITEMS%"=="" set "AUTO_NAIP_MAX_ITEMS_ARG=--auto-download-naip-max-items %AUTO_DOWNLOAD_NAIP_MAX_ITEMS%"
+    if /I "%AUTO_DOWNLOAD_NAIP_OVERWRITE%"=="true" set "AUTO_NAIP_OVERWRITE_FLAG=--auto-download-naip-overwrite"
+    if /I "%AUTO_DOWNLOAD_NAIP_PREVIEW%"=="true" set "AUTO_NAIP_PREVIEW_FLAG=--auto-download-naip-preview"
 )
 
-python sentinel2_processing.py ^
+set "AUTO_WETLANDS_FLAG="
+set "WETLANDS_OUTPUT_ARG="
+set "WETLANDS_OVERWRITE_FLAG="
+if /I "%AUTO_DOWNLOAD_WETLANDS%"=="true" (
+    set "AUTO_WETLANDS_FLAG=--auto-download-wetlands"
+    if not "%WETLANDS_OUTPUT%"=="" set "WETLANDS_OUTPUT_ARG=--wetlands-output-path "%WETLANDS_OUTPUT%""
+    if /I "%WETLANDS_OVERWRITE%"=="true" set "WETLANDS_OVERWRITE_FLAG=--wetlands-overwrite"
+)
+
+set "NAIP_RESOLUTION_ARG="
+if not "%NAIP_TARGET_RESOLUTION%"=="" set "NAIP_RESOLUTION_ARG=--naip-target-resolution %NAIP_TARGET_RESOLUTION%"
+
+python "sentinel2_processing.py" ^
     --aoi "%AOI_PATH%" ^
     --years %YEARS% ^
     --output-dir "%OUTPUT_DIR%" ^
     --seasons %SEASONS% ^
-    --naip-path "%NAIP_PATH%" ^
+    %NAIP_ARG% ^
+    %AUTO_NAIP_FLAG% ^
+    %AUTO_NAIP_YEAR_ARG% ^
+    %AUTO_NAIP_MAX_ITEMS_ARG% ^
+    %AUTO_NAIP_OVERWRITE_FLAG% ^
+    %AUTO_NAIP_PREVIEW_FLAG% ^
+    %AUTO_WETLANDS_FLAG% ^
+    %WETLANDS_OUTPUT_ARG% ^
+    %WETLANDS_OVERWRITE_FLAG% ^
+    %NAIP_RESOLUTION_ARG% ^
     --cloud-cover %CLOUD_COVER% ^
     --min-clear-obs %MIN_CLEAR_OBS% ^
     --mask-dilation %MASK_DILATION% ^

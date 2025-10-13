@@ -3,13 +3,9 @@ import argparse
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
-import geoai
-import rasterio
-import numpy as np
-
-from .stacking import RasterStack, load_manifest, rewrite_tile_images
+from .stacking import load_manifest
+from .training.mask_rcnn import train_mask_rcnn
 
 DEFAULT_TILE_SIZE = 512
 DEFAULT_STRIDE = 256
@@ -70,13 +66,6 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def derive_num_channels(raster_path: Path, override: Optional[int]) -> int:
-    if override is not None:
-        return override
-    with rasterio.open(raster_path) as src:
-        return src.count
-
-
 def main() -> None:
     args = parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level.upper()))
@@ -97,66 +86,43 @@ def main() -> None:
         naip_source = stack_manifest.naip
         if naip_source is None:
             raise ValueError("Stack manifest does not include a NAIP source.")
-        base_raster = naip_source.path
+        base_raster = Path(naip_source.path)
     else:
         if args.train_raster is None:
             raise ValueError("--train-raster must be provided when no stack manifest is supplied.")
         base_raster = Path(args.train_raster).expanduser().resolve()
 
-    if not Path(base_raster).exists():
+    if not base_raster.exists():
         raise FileNotFoundError(f"Training raster not found: {base_raster}")
 
-    default_parent = manifest_path.parent if manifest_path else Path(base_raster).parent
-    tiles_dir = Path(args.tiles_dir).expanduser().resolve() if args.tiles_dir else default_parent / "tiles"
-    models_dir = Path(args.models_dir).expanduser().resolve() if args.models_dir else tiles_dir / "models"
-    images_dir = tiles_dir / "images"
-    labels_tiles_dir = tiles_dir / "labels"
+    default_parent = manifest_path.parent if manifest_path else base_raster.parent
+    tiles_dir = (
+        Path(args.tiles_dir).expanduser().resolve()
+        if args.tiles_dir
+        else default_parent / "tiles"
+    )
+    models_dir = (
+        Path(args.models_dir).expanduser().resolve()
+        if args.models_dir
+        else tiles_dir / "models"
+    )
 
-    for path in (tiles_dir, models_dir):
-        path.mkdir(parents=True, exist_ok=True)
-
-    logging.info("Exporting tiles to %s", tiles_dir)
-    geoai.export_geotiff_tiles(
-        in_raster=str(base_raster),
-        out_folder=str(tiles_dir),
-        in_class_data=str(labels_path),
+    train_mask_rcnn(
+        labels_path=labels_path,
+        train_raster=base_raster,
+        tiles_dir=tiles_dir,
+        models_dir=models_dir,
+        stack_manifest_path=manifest_path,
         tile_size=args.tile_size,
         stride=args.stride,
         buffer_radius=args.buffer,
-    )
-
-    if stack_manifest is not None:
-        rewritten = rewrite_tile_images(stack_manifest, images_dir)
-        logging.info("Rewrote %s image tiles with stack manifest", rewritten)
-
-    if not images_dir.exists():
-        raise FileNotFoundError(f"Image tiles directory missing: {images_dir}")
-    if not labels_tiles_dir.exists():
-        raise FileNotFoundError(f"Label tiles directory missing: {labels_tiles_dir}")
-
-    if stack_manifest is not None and args.num_channels is None:
-        with RasterStack(stack_manifest) as stack:
-            num_channels = stack.band_count
-    else:
-        num_channels = derive_num_channels(Path(base_raster), args.num_channels)
-    if args.num_channels is not None:
-        num_channels = args.num_channels
-
-    logging.info("Training model with %s input channels", num_channels)
-
-    geoai.train_MaskRCNN_model(
-        images_dir=str(images_dir),
-        labels_dir=str(labels_tiles_dir),
-        output_dir=str(models_dir),
-        num_channels=num_channels,
+        num_channels_override=args.num_channels,
         pretrained=args.pretrained,
         batch_size=args.batch_size,
-        num_epochs=args.epochs,
+        epochs=args.epochs,
         learning_rate=args.learning_rate,
         val_split=args.val_split,
     )
-
-    logging.info("Training complete. Models saved to %s", models_dir)
 
 
 

@@ -2,19 +2,15 @@
 import argparse
 import logging
 import os
-import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional
 
 import geoai
 import rasterio
-import numpy as np
-import torch
-from rasterio.windows import Window
 
-from geoai.train import get_instance_segmentation_model
-from geoai.utils import get_device
-from .stacking import FLOAT_NODATA, RasterStack, StackManifest, load_manifest
+from .inference.common import resolve_output_paths
+from .inference.mask_rcnn_stream import infer_manifest
+from .stacking import load_manifest
 
 DEFAULT_WINDOW_SIZE = 512
 DEFAULT_OVERLAP = 256
@@ -64,150 +60,6 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def determine_output_paths(test_raster: Path, args: argparse.Namespace) -> Tuple[Path, Path, Path]:
-    output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else test_raster.parent / "predictions"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    masks_path = Path(args.masks).expanduser().resolve() if args.masks else output_dir / f"{test_raster.stem}_predictions.tif"
-    vectors_path = Path(args.vectors).expanduser().resolve() if args.vectors else output_dir / f"{test_raster.stem}_predictions.gpkg"
-
-    masks_path.parent.mkdir(parents=True, exist_ok=True)
-    vectors_path.parent.mkdir(parents=True, exist_ok=True)
-    return output_dir, masks_path, vectors_path
-
-
-def derive_num_channels(raster_path: Path, override: Optional[int]) -> int:
-    if override is not None:
-        return override
-    with rasterio.open(raster_path) as src:
-        return src.count
-
-
-def _compute_offsets(size: int, window: int, overlap: int) -> List[int]:
-    if size <= window:
-        return [0]
-    step = max(window - overlap, 1)
-    offsets = list(range(0, size - window + 1, step))
-    last = size - window
-    if offsets[-1] != last:
-        offsets.append(last)
-    return sorted(set(offsets))
-
-
-def run_manifest_inference(
-    manifest,
-    model_path: Path,
-    output_path: Path,
-    window_size: int,
-    overlap: int,
-    confidence_threshold: float,
-    batch_size: int,
-    num_channels: Optional[int],
-) -> None:
-    manifest_obj = manifest if isinstance(manifest, StackManifest) else load_manifest(manifest)
-    device = get_device()
-
-    channel_count = num_channels
-    if channel_count is None:
-        with RasterStack(manifest_obj) as stack:
-            channel_count = stack.band_count
-
-    model = get_instance_segmentation_model(num_classes=2, num_channels=channel_count, pretrained=True)
-    state_dict = torch.load(model_path, map_location=device)
-    if any(key.startswith("module.") for key in state_dict.keys()):
-        state_dict = {key.replace("module.", ""): value for key, value in state_dict.items()}
-    model.load_state_dict(state_dict)
-    model.to(device)
-    model.eval()
-
-    start = time.perf_counter()
-
-    with torch.no_grad():
-        with RasterStack(manifest_obj) as stack:
-            height = stack.height
-            width = stack.width
-            transform = stack.transform
-            crs = stack.crs
-
-            window_h = min(window_size, height)
-            window_w = min(window_size, width)
-
-            row_offsets = _compute_offsets(height, window_h, overlap)
-            col_offsets = _compute_offsets(width, window_w, overlap)
-
-            total_windows = len(row_offsets) * len(col_offsets)
-            logging.info(
-                "Streaming inference across %s windows (%sx%s, overlap=%s)",
-                total_windows,
-                window_h,
-                window_w,
-                overlap,
-            )
-
-            pred_accumulator = np.zeros((height, width), dtype=np.float32)
-            count_accumulator = np.zeros((height, width), dtype=np.float32)
-
-            for row_off in row_offsets:
-                for col_off in col_offsets:
-                    win = Window(col_off, row_off, window_w, window_h)
-                    data = stack.read_window(win)
-                    data = np.where(data == FLOAT_NODATA, 0.0, data)
-                    tensor = torch.from_numpy(data).to(device)
-                    tensor = tensor.unsqueeze(0)
-
-                    outputs = model(tensor)
-                    output = outputs[0]
-
-                    scores = output.get("scores")
-                    masks = output.get("masks")
-                    if scores is None or masks is None or len(scores) == 0:
-                        continue
-
-                    keep = scores > confidence_threshold
-                    if not torch.any(keep):
-                        continue
-
-                    masks = masks[keep].squeeze(1)
-                    if masks.ndim == 2:
-                        masks = masks.unsqueeze(0)
-
-                    combined = torch.max(masks, dim=0)[0] > 0.5
-                    combined_np = combined.cpu().numpy().astype(np.float32)
-
-                    row_end = min(row_off + window_h, height)
-                    col_end = min(col_off + window_w, width)
-                    h = row_end - row_off
-                    w = col_end - col_off
-
-                    pred_accumulator[row_off:row_end, col_off:col_end] += combined_np[:h, :w]
-                    count_accumulator[row_off:row_end, col_off:col_end] += 1.0
-
-    valid = count_accumulator > 0
-    mask = np.zeros((pred_accumulator.shape[0], pred_accumulator.shape[1]), dtype=np.uint8)
-    mask[valid] = (pred_accumulator[valid] / count_accumulator[valid] > 0.5).astype(np.uint8)
-
-    profile = {
-        "driver": "GTiff",
-        "width": width,
-        "height": height,
-        "count": 1,
-        "dtype": "uint8",
-        "transform": transform,
-        "nodata": 0,
-        "compress": "deflate",
-        "tiled": True,
-        "BIGTIFF": "IF_SAFER",
-    }
-    if crs is not None:
-        profile["crs"] = crs
-
-    with rasterio.open(output_path, "w", **profile) as dst:
-        dst.write(mask, 1)
-
-    elapsed = time.perf_counter() - start
-    logging.info("Streaming inference finished in %.2f seconds", elapsed)
-
-
 def main() -> None:
     args = parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level.upper()))
@@ -227,7 +79,6 @@ def main() -> None:
     if stack_manifest is not None:
         source_path = manifest_path
         logging.info("Using stack manifest at %s for streaming inference", manifest_path)
-        test_raster = None
     else:
         if args.test_raster is None:
             raise ValueError("--test-raster must be supplied when no stack manifest is provided.")
@@ -236,24 +87,38 @@ def main() -> None:
             raise FileNotFoundError(f"Test raster not found: {test_raster}")
         source_path = test_raster
 
-    output_dir, masks_path, vectors_path = determine_output_paths(source_path, args)
+    output_dir, masks_path, vectors_path = resolve_output_paths(
+        source_path=source_path,
+        output_dir=(
+            Path(args.output_dir).expanduser().resolve() if args.output_dir else None
+        ),
+        mask_path=Path(args.masks).expanduser().resolve() if args.masks else None,
+        vector_path=Path(args.vectors).expanduser().resolve() if args.vectors else None,
+        raster_suffix="predictions",
+    )
 
     if stack_manifest is not None:
-        run_manifest_inference(
+        infer_manifest(
             manifest=stack_manifest,
             model_path=model_path,
             output_path=masks_path,
             window_size=args.window_size,
             overlap=args.overlap,
             confidence_threshold=args.confidence_threshold,
-            batch_size=args.batch_size,
             num_channels=args.num_channels,
         )
     else:
-        num_channels = derive_num_channels(test_raster, args.num_channels)
+        assert args.test_raster is not None  # for type-checkers
+        test_raster_path = Path(args.test_raster).expanduser().resolve()
+        if args.num_channels is None:
+            with rasterio.open(test_raster_path) as src:
+                num_channels = src.count
+        else:
+            num_channels = args.num_channels
+
         logging.info("Running inference with %s input channels", num_channels)
         geoai.object_detection(
-            str(test_raster),
+            str(test_raster_path),
             str(masks_path),
             str(model_path),
             window_size=args.window_size,

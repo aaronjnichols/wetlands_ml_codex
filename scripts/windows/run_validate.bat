@@ -1,6 +1,9 @@
 @echo off
 setlocal
 
+REM Change to project root directory (2 levels up from scripts\windows)
+cd /d "%~dp0..\.."
+
 set "SEASON_RASTER=data\small_test\s2\s2_spr_median_7band.tif"
 set "SEASON_LABEL=SPR"
 set "YEARS=2022 2023"
@@ -34,13 +37,13 @@ if "%YEARS%"=="" (
     exit /b 1
 )
 
-if not exist venv\Scripts\activate.bat (
+if not exist "venv\Scripts\activate.bat" (
     echo [ERROR] Python virtual environment not found. Run setup.bat first.
     pause
     exit /b 1
 )
 
-call venv\Scripts\activate.bat
+call "venv\Scripts\activate.bat"
 if errorlevel 1 (
     echo [ERROR] Failed to activate virtual environment.
     pause

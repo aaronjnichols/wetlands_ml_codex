@@ -1,13 +1,16 @@
 @echo off
 setlocal enabledelayedexpansion
 
-set "STACK_MANIFEST="data\small_test\s2\stack_manifest.json""
+REM Change to project root directory (2 levels up from scripts\windows)
+cd /d "%~dp0..\.."
+
+set "STACK_MANIFEST=scripts\windows\data\s2\stack_manifest.json"
 set "TRAIN_RASTER="
-set "LABELS=data\small_test\wetlands.gpkg"
-set "TILES_DIR=data\small_test\tiles"
-set "MODELS_DIR=data\small_test\models"
-set "TILE_SIZE=128"
-set "STRIDE=64"
+set "LABELS=scripts\windows\data\wetlands\train_wetlands.gpkg"
+set "TILES_DIR=scripts\windows\data\tiles"
+set "MODELS_DIR=scripts\windows\data\models"
+set "TILE_SIZE=256"
+set "STRIDE=128"
 set "BUFFER=0"
 set "BATCH_SIZE=4"
 set "EPOCHS=10"

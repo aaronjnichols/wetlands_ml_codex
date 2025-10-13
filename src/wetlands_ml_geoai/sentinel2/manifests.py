@@ -1,0 +1,96 @@
+"""Manifest helpers for Sentinel-2 and NAIP stacks."""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Optional, Sequence
+
+import numpy as np
+import rasterio
+
+from ..stacking import FLOAT_NODATA
+from .progress import format_duration
+
+NAIP_BAND_LABELS = ["NAIP_R", "NAIP_G", "NAIP_B", "NAIP_NIR"]
+
+
+def affine_to_list(transform):
+    return [transform.a, transform.b, transform.c, transform.d, transform.e, transform.f]
+
+
+def compute_naip_scaling(dataset: rasterio.io.DatasetReader) -> Optional[float]:
+    if dataset.nodata is None and not np.issubdtype(np.dtype(dataset.dtypes[0]), np.integer):
+        return None
+    dtype = np.dtype(dataset.dtypes[0])
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        if info.max <= 0:
+            return None
+        return float(info.max)
+    return None
+
+
+def write_stack_manifest(
+    output_dir: Path,
+    naip_path: Path,
+    naip_labels: Sequence[str],
+    sentinel_path: Path,
+    sentinel_labels: Sequence[str],
+    reference_profile: Dict[str, any],
+) -> Path:
+    manifest = {
+        "version": 1,
+        "created_utc": datetime.utcnow().isoformat() + "Z",
+        "grid": {
+            "crs": reference_profile.get("crs"),
+            "transform": affine_to_list(reference_profile["transform"]),
+            "width": reference_profile["width"],
+            "height": reference_profile["height"],
+            "pixel_size": [
+                reference_profile["transform"].a,
+                -reference_profile["transform"].e,
+            ],
+            "dtype": "float32",
+            "nodata": FLOAT_NODATA,
+        },
+        "sources": [],
+    }
+
+    naip_entry = {
+        "type": "naip",
+        "path": str(Path(naip_path).resolve()),
+        "band_labels": list(naip_labels),
+        "scale_max": None,
+        "nodata": None,
+    }
+
+    with rasterio.open(naip_path) as src:
+        naip_entry["nodata"] = src.nodata
+        naip_entry["dtype"] = src.dtypes[0]
+        scale = compute_naip_scaling(src)
+        if scale:
+            naip_entry["scale_max"] = scale
+    manifest["sources"].append(naip_entry)
+
+    sentinel_entry = {
+        "type": "sentinel",
+        "path": str(Path(sentinel_path).resolve()),
+        "band_labels": list(sentinel_labels),
+        "resample": "bilinear",
+        "nodata": FLOAT_NODATA,
+    }
+    manifest["sources"].append(sentinel_entry)
+
+    manifest_path = output_dir / "stack_manifest.json"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+__all__ = ["affine_to_list", "compute_naip_scaling", "write_stack_manifest"]
+
