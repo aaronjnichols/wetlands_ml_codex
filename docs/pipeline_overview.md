@@ -39,18 +39,15 @@ This document summarizes the major data and control flows in the current codebas
   - NAIP reference preparation, including mosaicking, resampling, and manifest scaffolding.
   - STAC queries for Sentinel-2 imagery, filtering by season, cloud masking via SCL, generating composites with Stackstac & Dask.
   - Progress reporting utilities (custom progress bar classes).
-  - Manifest writing (`write_stack_manifest`) and optional NAIP/wetlands downloads.
+  - Optional downloads for NAIP, wetlands, and LiDAR topography that feed into the training stack.
+- Manifest writing (`write_stack_manifest`) supports extra sources so LiDAR derivatives expand the stack to 28 bands when requested.
 
-## Stacking Utilities
+## LiDAR Topography Processing
 
-- `src/wetlands_ml_geoai/stacking.py` defines manifest dataclasses, `RasterStack`, and `rewrite_tile_images` used in both training and inference workflows.
-- Functions in training/inference modules duplicate channel derivation, manifest parsing, output path resolution, and sliding window offset calculations that logically belong beside stacking helpers.
-
-## Key Pain Points
-
-- CLI modules intermingle argument parsing, filesystem IO, tiling, learning orchestration, and utility helpers in the same file, making reuse difficult.
-- Shared helpers (`_analyze_label_tiles`, `_compute_offsets`, `derive_num_channels`, output path handling) are duplicated across Mask R-CNN and UNet codepaths.
-- Sentinel-2 processing module exceeds 800 lines and blends unrelated concerns (CLI, geometry parsing, downloads, compositing, progress updates).
-
-This baseline informs the refactor tasks tracked in the active TODO list.
-
+- Entrypoint: `topography/cli.py` (Python module and `scripts/windows/run_topography_processing.bat`).
+- Responsibilities:
+  - Query USGS 3DEP (TNM Access) for buffered AOI coverage, download and cache 1 m DEM tiles.
+  - Mosaic DEM to the NAIP/Sentinel grid, respecting a configurable buffer to avoid edge artifacts.
+  - Compute derived bands: slope, TPI (small/large radii), depression depth; output float32 raster with nodata propagation.
+  - Register topography raster in the stack manifest so training/inference consume a 28-band stack transparently.
+  - Sentinel-2 seasonal pipeline can auto-generate these rasters when the corresponding flags are provided; the standalone CLI remains available for manual runs.

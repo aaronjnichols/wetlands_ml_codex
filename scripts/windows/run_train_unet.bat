@@ -7,7 +7,7 @@ cd /d "%~dp0..\.."
 REM ------------------------------------------------------------------
 REM Edit the values below to match your training setup before running.
 REM ------------------------------------------------------------------
-set "STACK_MANIFEST=scripts\windows\data\s2\stack_manifest.json"
+set "STACK_MANIFEST=data\s2\topo\stack_manifest.json"
 set "TRAIN_RASTER="
 set "LABELS=scripts\windows\data\wetlands\train_wetlands.gpkg"
 set "TILES_DIR=scripts\windows\data\tiles"

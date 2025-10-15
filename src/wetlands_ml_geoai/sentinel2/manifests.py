@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Sequence
@@ -39,7 +40,9 @@ def write_stack_manifest(
     sentinel_path: Path,
     sentinel_labels: Sequence[str],
     reference_profile: Dict[str, any],
+    extra_sources: Optional[Sequence[Dict[str, any]]] = None,
 ) -> Path:
+    logging.info("Preparing stack manifest")
     manifest = {
         "version": 1,
         "created_utc": datetime.utcnow().isoformat() + "Z",
@@ -83,12 +86,18 @@ def write_stack_manifest(
     }
     manifest["sources"].append(sentinel_entry)
 
+    if extra_sources:
+        logging.info("Appending %s extra source(s) to manifest", len(extra_sources))
+        for source in extra_sources:
+            manifest["sources"].append(source)
+
     manifest_path = output_dir / "stack_manifest.json"
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(
         json.dumps(manifest, indent=2),
         encoding="utf-8",
     )
+    logging.info("Stack manifest written -> %s", manifest_path)
     return manifest_path
 
 

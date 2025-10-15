@@ -15,10 +15,10 @@ rem Change to project root directory (2 levels up from scripts\windows)
 cd /d "%~dp0..\.."
 if errorlevel 1 goto :fail
 
-set "STACK_MANIFEST=data\s2\test\stack_manifest.json"
+set "STACK_MANIFEST=C:\Users\anichols\OneDrive - Atwell LLC\Desktop\_Atwell_AI\Projects\Wetlands_ML\Test_Model_Data_FL\20251014_Model\s2\stack_manifest.json"
 set "TEST_RASTER="
-set "MODEL_PATH=scripts\windows\data\models_unet\best_model.pth"
-set "OUTPUT_DIR=data\predictions_unet"
+set "MODEL_PATH=C:\_Python\wetlands_ml_codex\wetlands_ml_codex\scripts\windows\data\models_unet\best_model.pth"
+set "OUTPUT_DIR=C:\Users\anichols\OneDrive - Atwell LLC\Desktop\_Atwell_AI\Projects\Wetlands_ML\Test_Model_Data_FL\20251014_Model\unet_predictions"
 set "MASK_PATH="
 set "VECTOR_PATH="
 set "WINDOW_SIZE=512"
@@ -41,16 +41,16 @@ call "venv\Scripts\activate.bat"
 if errorlevel 1 goto :fail
 
 set "STACK_ARG="
-if not "%STACK_MANIFEST%"=="" set "STACK_ARG=--stack-manifest \"%STACK_MANIFEST%\""
+if not "%STACK_MANIFEST%"=="" set "STACK_ARG=--stack-manifest ^"%STACK_MANIFEST%^""
 
 set "RASTER_ARG="
-if not "%TEST_RASTER%"=="" set "RASTER_ARG=--test-raster \"%TEST_RASTER%\""
+if not "%TEST_RASTER%"=="" set "RASTER_ARG=--test-raster ^"%TEST_RASTER%^""
 
 set "MASK_ARG="
-if not "%MASK_PATH%"=="" set "MASK_ARG=--masks \"%MASK_PATH%\""
+if not "%MASK_PATH%"=="" set "MASK_ARG=--masks ^"%MASK_PATH%^""
 
 set "VECTOR_ARG="
-if not "%VECTOR_PATH%"=="" set "VECTOR_ARG=--vectors \"%VECTOR_PATH%\""
+if not "%VECTOR_PATH%"=="" set "VECTOR_ARG=--vectors ^"%VECTOR_PATH%^""
 
 set "NUM_CHANNELS_ARG="
 if not "%NUM_CHANNELS%"=="" set "NUM_CHANNELS_ARG=--num-channels %NUM_CHANNELS%"

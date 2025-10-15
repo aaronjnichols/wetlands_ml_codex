@@ -35,6 +35,7 @@ from ..data_acquisition import (
     _resample_naip_tile,
 )
 from ..stacking import FLOAT_NODATA
+from ..topography import TopographyStackConfig, prepare_topography_stack
 from .manifests import NAIP_BAND_LABELS, write_stack_manifest
 from .progress import LoggingProgressBar, RasterProgress, format_duration
 
@@ -447,6 +448,11 @@ def run_pipeline(
     wetlands_overwrite: bool = False,
     naip_target_resolution: Optional[float] = None,
     mask_dilation: int = 0,
+    auto_download_topography: bool = False,
+    topography_cache_dir: Optional[Path] = None,
+    topography_buffer_meters: float = 200.0,
+    topography_tpi_small: float = 30.0,
+    topography_tpi_large: float = 150.0,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     naip_candidates: List[Path] = list(naip_paths) if naip_paths else []
@@ -553,6 +559,35 @@ def run_pipeline(
             output_dir,
             target_resolution=naip_target_resolution,
         )
+        extra_sources = None
+        topography_path: Optional[Path] = None
+        if auto_download_topography:
+            topo_output_dir = output_dir / "topography"
+            topo_config = TopographyStackConfig(
+                aoi=geom,
+                target_grid_path=naip_reference_path,
+                output_dir=topo_output_dir,
+                buffer_meters=topography_buffer_meters,
+                tpi_small_radius=topography_tpi_small,
+                tpi_large_radius=topography_tpi_large,
+                cache_dir=topography_cache_dir,
+            )
+            topography_path = prepare_topography_stack(topo_config)
+            extra_sources = [
+                {
+                    "type": "topography",
+                    "path": str(topography_path.resolve()),
+                    "band_labels": [
+                        "Slope",
+                        "TPI_small",
+                        "TPI_large",
+                        "DepressionDepth",
+                    ],
+                    "resample": "bilinear",
+                    "nodata": FLOAT_NODATA,
+                    "description": topo_config.description,
+                }
+            ]
         manifest_path = write_stack_manifest(
             output_dir=output_dir,
             naip_path=naip_reference_path,
@@ -560,9 +595,12 @@ def run_pipeline(
             sentinel_path=combined21_path,
             sentinel_labels=labels21,
             reference_profile=reference_profile,
+            extra_sources=extra_sources,
         )
         progress.finish(stack_label)
         logging.info("Stack manifest written to %s", manifest_path)
+        if topography_path:
+            logging.info("Topography raster stored at %s", topography_path)
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
@@ -658,6 +696,34 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         help="Optional NAIP resampling resolution in meters.",
     )
     parser.add_argument(
+        "--auto-download-topography",
+        action="store_true",
+        help="Automatically derive LiDAR-based topographic features for the stack.",
+    )
+    parser.add_argument(
+        "--topography-buffer-meters",
+        type=float,
+        default=200.0,
+        help="Buffer distance (meters) applied to the AOI before DEM download.",
+    )
+    parser.add_argument(
+        "--topography-tpi-small",
+        type=float,
+        default=30.0,
+        help="Radius in meters for the small-scale TPI.",
+    )
+    parser.add_argument(
+        "--topography-tpi-large",
+        type=float,
+        default=150.0,
+        help="Radius in meters for the large-scale TPI.",
+    )
+    parser.add_argument(
+        "--topography-cache-dir",
+        type=Path,
+        help="Optional directory for caching raw DEM downloads.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -685,6 +751,11 @@ def run_from_args(args: argparse.Namespace) -> None:
         wetlands_overwrite=args.wetlands_overwrite,
         naip_target_resolution=args.naip_target_resolution,
         mask_dilation=args.mask_dilation,
+        auto_download_topography=args.auto_download_topography,
+        topography_cache_dir=args.topography_cache_dir,
+        topography_buffer_meters=args.topography_buffer_meters,
+        topography_tpi_small=args.topography_tpi_small,
+        topography_tpi_large=args.topography_tpi_large,
     )
 
 

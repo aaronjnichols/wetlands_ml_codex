@@ -7,16 +7,16 @@ cd /d "%~dp0..\.."
 REM ------------------------------------------------------------------
 REM Edit the values below to match your project before running.
 REM ------------------------------------------------------------------
-set "AOI_PATH=C:\Users\anichols\OneDrive - Atwell LLC\Desktop\_Atwell_AI\Projects\Wetlands_ML\Test_Model_Data_FL\test_aoi.gpkg"
+set "AOI_PATH=C:\Users\anichols\OneDrive - Atwell LLC\Desktop\_Atwell_AI\Projects\Wetlands_ML\Test_Model_Data_FL\test_aoi.gpkg
 set "YEARS=2022 2023 2024"
-set "OUTPUT_DIR=data\s2\test"
+set "OUTPUT_DIR=C:\Users\anichols\OneDrive - Atwell LLC\Desktop\_Atwell_AI\Projects\Wetlands_ML\Test_Model_Data_FL\20251014_Model\s2"
 set "SEASONS=SPR SUM FAL"
 set "NAIP_PATH="
 set "CLOUD_COVER=60"
 set "MIN_CLEAR_OBS=3"
 set "MASK_DILATION=0"
 set "STAC_URL=https://earth-search.aws.element84.com/v1"
-set "LOG_LEVEL=INFO"
+set "LOG_LEVEL=DEBUG"
 
 REM Auto-download configuration (set false to disable)
 set "AUTO_DOWNLOAD_NAIP=true"
@@ -25,9 +25,14 @@ set "AUTO_DOWNLOAD_NAIP_MAX_ITEMS=1"
 set "AUTO_DOWNLOAD_NAIP_OVERWRITE=false"
 set "AUTO_DOWNLOAD_NAIP_PREVIEW=false"
 set "AUTO_DOWNLOAD_WETLANDS=true"
-set "WETLANDS_OUTPUT=data\wetlands\train_wetlands.gpkg"
+set "WETLANDS_OUTPUT=C:\Users\anichols\OneDrive - Atwell LLC\Desktop\_Atwell_AI\Projects\Wetlands_ML\Test_Model_Data_FL\20251014_Model\test_wetlands.gpkg"
 set "WETLANDS_OVERWRITE=false"
 set "NAIP_TARGET_RESOLUTION=1"
+set "AUTO_DOWNLOAD_TOPOGRAPHY=true"
+set "TOPOGRAPHY_BUFFER_METERS="
+set "TOPOGRAPHY_TPI_SMALL="
+set "TOPOGRAPHY_TPI_LARGE="
+set "TOPOGRAPHY_CACHE_DIR="
 
 if not exist "venv\Scripts\activate.bat" (
     echo [ERROR] Python virtual environment not found. Run setup.bat first.
@@ -65,6 +70,19 @@ if /I "%AUTO_DOWNLOAD_WETLANDS%"=="true" (
 set "NAIP_RESOLUTION_ARG="
 if not "%NAIP_TARGET_RESOLUTION%"=="" set "NAIP_RESOLUTION_ARG=--naip-target-resolution %NAIP_TARGET_RESOLUTION%"
 
+set "AUTO_TOPO_FLAG="
+set "TOPO_BUFFER_ARG="
+set "TOPO_SMALL_ARG="
+set "TOPO_LARGE_ARG="
+set "TOPO_CACHE_ARG="
+if /I "%AUTO_DOWNLOAD_TOPOGRAPHY%"=="true" (
+    set "AUTO_TOPO_FLAG=--auto-download-topography"
+    if not "%TOPOGRAPHY_BUFFER_METERS%"=="" set "TOPO_BUFFER_ARG=--topography-buffer-meters %TOPOGRAPHY_BUFFER_METERS%"
+    if not "%TOPOGRAPHY_TPI_SMALL%"=="" set "TOPO_SMALL_ARG=--topography-tpi-small %TOPOGRAPHY_TPI_SMALL%"
+    if not "%TOPOGRAPHY_TPI_LARGE%"=="" set "TOPO_LARGE_ARG=--topography-tpi-large %TOPOGRAPHY_TPI_LARGE%"
+    if not "%TOPOGRAPHY_CACHE_DIR%"=="" set "TOPO_CACHE_ARG=--topography-cache-dir "%TOPOGRAPHY_CACHE_DIR%""
+)
+
 python "sentinel2_processing.py" ^
     --aoi "%AOI_PATH%" ^
     --years %YEARS% ^
@@ -80,6 +98,11 @@ python "sentinel2_processing.py" ^
     %WETLANDS_OUTPUT_ARG% ^
     %WETLANDS_OVERWRITE_FLAG% ^
     %NAIP_RESOLUTION_ARG% ^
+    %AUTO_TOPO_FLAG% ^
+    %TOPO_BUFFER_ARG% ^
+    %TOPO_SMALL_ARG% ^
+    %TOPO_LARGE_ARG% ^
+    %TOPO_CACHE_ARG% ^
     --cloud-cover %CLOUD_COVER% ^
     --min-clear-obs %MIN_CLEAR_OBS% ^
     --mask-dilation %MASK_DILATION% ^

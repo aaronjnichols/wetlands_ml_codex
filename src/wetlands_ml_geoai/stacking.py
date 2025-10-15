@@ -37,6 +37,7 @@ class StackSource:
     nodata: Optional[float] = None
     resample: str = "bilinear"
     dtype: Optional[str] = None
+    description: Optional[str] = None
 
     @property
     def count(self) -> int:
@@ -87,6 +88,7 @@ def load_manifest(path: Union[str, Path]) -> StackManifest:
                 nodata=source_data.get("nodata"),
                 resample=source_data.get("resample", "bilinear"),
                 dtype=source_data.get("dtype"),
+                description=source_data.get("description"),
             )
         )
 
